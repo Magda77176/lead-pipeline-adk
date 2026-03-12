@@ -9,12 +9,13 @@ Customer hasn't ordered in 12 days
         │
         ▼
 ┌──────────────────┐
-│  Profiling Agent │ ← Magento REST API
+│  Profiling Agent │ ← Magento REST API + Emarsys CRM
 │                  │   • Customer data (orders, LTV, segments)
 │                  │   • Purchase history & patterns
 │                  │   • Abandoned cart detection
+│                  │   • Emarsys engagement score + RFM segment
 └────────┬─────────┘
-         │  customer brief
+         │  customer brief (Magento + Emarsys merged)
          ▼
 ┌──────────────────┐
 │ Recommendation   │ ← Product Catalog API
@@ -25,10 +26,10 @@ Customer hasn't ordered in 12 days
          │  personalized offers
          ▼
 ┌──────────────────┐
-│  Engagement      │ ← Email / Push / SMS
-│      Agent       │   • Personalized message
-│                  │   • Channel selection (email, push, SMS)
-│                  │   • CRM segment update
+│  Engagement      │ ← Emarsys Automation Center
+│      Agent       │   • Multi-step automation (email → push → SMS)
+│                  │   • Or one-shot message (transactional)
+│                  │   • RFM segment + tag update
 └──────────────────┘
 ```
 
@@ -39,7 +40,7 @@ Customer hasn't ordered in 12 days
 **What happens:**
 1. **Profiling** → Marie Dupont, VIP, €847 lifetime value, 12 orders, prefers skincare + makeup. Abandoned cart detected: Hyaluron Serum + Revitalift Eye Cream (€47.80)
 2. **Recommendation** → Recover abandoned cart items + cross-sell Telescopic Mascara (matches her makeup preferences). Generates coupon `VIP-2345-15` (15% off, single-use)
-3. **Engagement** → Personalized email sent, CRM updated (segment: `vip_active`, tags: `re-engaged, abandoned_cart_recovery`)
+3. **Engagement** → Emarsys automation `cart_recovery_v2` triggered (email → wait 48h → push → wait 72h → last chance email). CRM segment updated to `champions`, tags: `re-engaged, abandoned_cart_recovery`
 
 ## Stack
 
@@ -49,21 +50,31 @@ Customer hasn't ordered in 12 days
 | LLM | Gemini 2.5 Flash |
 | API | FastAPI + Pydantic v2 |
 | E-commerce | Magento 2 REST API (`/rest/V1/`) |
+| CRM | Emarsys (SAP) — RFM segmentation, Automation Center, Smart Insight |
 | Runtime | Cloud Run (serverless) |
 | CI/CD | GitHub Actions → Artifact Registry → Cloud Run |
-| Tests | pytest — 20 tests |
+| Tests | pytest — 24 tests |
 
-## Magento API Tools
+## Tools — Magento + Emarsys Integration
 
-| Tool | Magento Endpoint | Purpose |
-|------|-----------------|---------|
+### Magento 2 REST API
+
+| Tool | Endpoint | Purpose |
+|------|----------|---------|
 | `get_customer_profile` | `GET /rest/V1/customers/{id}` | Demographics, LTV, segments |
 | `get_order_history` | `GET /rest/V1/orders` | Recent purchases, items, amounts |
 | `check_cart_abandonment` | `GET /rest/V1/carts/search` | Active abandoned carts |
 | `get_product_catalog` | `GET /rest/V1/products` | Category browsing, stock, ratings |
 | `generate_discount_code` | `POST /rest/V1/salesRules` | Personalized coupon codes |
-| `send_engagement` | SendGrid / Brevo API | Email, push, SMS delivery |
-| `update_crm_segment` | `PUT /rest/V1/customers/{id}` | Segment + tag updates |
+
+### Emarsys CRM (SAP)
+
+| Tool | Endpoint | Purpose |
+|------|----------|---------|
+| `emarsys_get_contact` | `POST /api/v2/contact/getdata` | Engagement score, RFM segment, open/click rates, Smart Insight |
+| `emarsys_trigger_automation` | `POST /api/v2/event/{id}/trigger` | Enroll contact in Automation Center programs (cart recovery, winback, cross-sell) |
+| `emarsys_update_segment` | `PUT /api/v2/contact` | Update RFM segment + tags |
+| `send_engagement` | Emarsys transactional API | One-shot email/push/SMS (when automation is overkill) |
 
 ## Quick Start
 

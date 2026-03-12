@@ -5,7 +5,8 @@ from fastapi.testclient import TestClient
 from lead_pipeline.agent import (
     get_customer_profile, get_order_history, get_product_catalog,
     check_cart_abandonment, generate_discount_code, send_engagement,
-    update_crm_segment, root_agent, profiling_agent,
+    emarsys_get_contact, emarsys_trigger_automation, emarsys_update_segment,
+    root_agent, profiling_agent,
     recommendation_agent, engagement_agent,
 )
 
@@ -89,11 +90,42 @@ class TestSendEngagement:
         assert result["open_tracking"] == True
 
 
-class TestCrmSegment:
+class TestEmarsysContact:
+    def test_get_contact(self):
+        result = emarsys_get_contact("marie@test.com")
+        assert result["status"] == "success"
+        assert result["contact"]["engagement_score"] > 0
+        assert result["contact"]["rfm_segment"] in ["champions", "loyal", "at_risk", "lost"]
+    
+    def test_contact_has_campaign_data(self):
+        result = emarsys_get_contact("marie@test.com")
+        c = result["contact"]
+        assert "open_rate" in c
+        assert "click_rate" in c
+        assert "smart_insight" in c
+
+
+class TestEmarsysAutomation:
+    def test_trigger_cart_recovery(self):
+        result = emarsys_trigger_automation("cart_recovery_v2", "marie@test.com", '{"product": "Serum"}')
+        assert result["status"] == "enrolled"
+        assert result["program_id"] == "cart_recovery_v2"
+        assert len(result["automation_steps"]) > 0
+    
+    def test_automation_has_multi_steps(self):
+        result = emarsys_trigger_automation("vip_winback", "marie@test.com", '{}')
+        steps = result["automation_steps"]
+        actions = [s["action"] for s in steps]
+        assert "email" in actions
+        assert "wait" in actions
+
+
+class TestEmarsysSegment:
     def test_segment_update(self):
-        result = update_crm_segment("12345", "vip_active", "skincare_lover, high_ltv")
+        result = emarsys_update_segment("marie@test.com", "champions", "skincare_lover, high_ltv")
         assert result["status"] == "updated"
         assert "skincare_lover" in result["tags_added"]
+        assert result["rfm_updated"] == True
 
 
 # ============================================================
@@ -109,14 +141,14 @@ class TestAgentStructure:
         names = [a.name for a in root_agent.sub_agents]
         assert names == ["profiling_agent", "recommendation_agent", "engagement_agent"]
     
-    def test_profiling_has_3_tools(self):
-        assert len(profiling_agent.tools) == 3
+    def test_profiling_has_4_tools(self):
+        assert len(profiling_agent.tools) == 4  # magento + emarsys
     
     def test_recommendation_has_2_tools(self):
         assert len(recommendation_agent.tools) == 2
     
-    def test_engagement_has_2_tools(self):
-        assert len(engagement_agent.tools) == 2
+    def test_engagement_has_3_tools(self):
+        assert len(engagement_agent.tools) == 3  # automation + send + segment
 
 
 # ============================================================

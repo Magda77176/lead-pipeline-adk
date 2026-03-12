@@ -178,8 +178,88 @@ def generate_discount_code(customer_id: str, discount_percent: str, reason: str)
     }
 
 
+def emarsys_get_contact(customer_email: str) -> dict:
+    """Retrieves contact data and interaction history from Emarsys CRM.
+    
+    Args:
+        customer_email: Customer email to look up in Emarsys.
+    
+    Returns:
+        dict: Emarsys contact profile with segments, scores, and campaign history.
+    """
+    # Production: POST /api/v2/contact/getdata (Emarsys API)
+    # Auth: X-WSSE header (username + secret + nonce + timestamp)
+    return {
+        "status": "success",
+        "contact": {
+            "id": "emarsys_892341",
+            "email": customer_email,
+            "engagement_score": 72,
+            "rfm_segment": "champions",  # Emarsys RFM: champions, loyal, at_risk, lost
+            "opted_in": True,
+            "preferred_channel": "email",
+            "last_email_opened": "2026-03-08",
+            "last_email_clicked": "2026-03-01",
+            "open_rate": 0.45,
+            "click_rate": 0.12,
+            "campaigns_received_30d": 4,
+            "lifecycle_stage": "active",
+            "smart_insight": "High probability of repeat purchase within 7 days"
+        }
+    }
+
+
+def emarsys_trigger_automation(program_id: str, customer_email: str, event_data: str) -> dict:
+    """Triggers an Emarsys Automation Center program for a specific contact.
+    
+    Args:
+        program_id: Emarsys automation program ID (e.g. 'cart_recovery_v2', 'vip_winback').
+        customer_email: Contact email to enroll.
+        event_data: JSON string with event context (product names, discount code, etc.).
+    
+    Returns:
+        dict: Automation enrollment confirmation.
+    """
+    # Production: POST /api/v2/event/{event_id}/trigger (Emarsys External Events API)
+    return {
+        "status": "enrolled",
+        "program_id": program_id,
+        "contact": customer_email,
+        "automation_steps": [
+            {"step": 1, "action": "email", "delay": "0h", "template": "personalized_reco"},
+            {"step": 2, "action": "wait", "delay": "48h", "condition": "not_purchased"},
+            {"step": 3, "action": "push_notification", "delay": "0h", "template": "reminder_with_coupon"},
+            {"step": 4, "action": "wait", "delay": "72h", "condition": "not_purchased"},
+            {"step": 5, "action": "email", "delay": "0h", "template": "last_chance_offer"}
+        ],
+        "estimated_completion": "2026-03-19"
+    }
+
+
+def emarsys_update_segment(customer_email: str, segment: str, tags: str) -> dict:
+    """Updates contact segment and tags in Emarsys.
+    
+    Args:
+        customer_email: Contact email to update.
+        segment: New segment (champions, loyal, at_risk, hibernating, lost).
+        tags: Comma-separated tags to add to the contact.
+    
+    Returns:
+        dict: Update confirmation with segment details.
+    """
+    # Production: PUT /api/v2/contact (Emarsys Contact API)
+    return {
+        "status": "updated",
+        "email": customer_email,
+        "segment": segment,
+        "tags_added": [t.strip() for t in tags.split(",")],
+        "rfm_updated": True,
+        "updated_at": "2026-03-12T12:00:00Z"
+    }
+
+
 def send_engagement(channel: str, customer_email: str, subject: str, content: str) -> dict:
-    """Sends a personalized engagement message to the customer.
+    """Sends a one-shot personalized message (used when Emarsys automation is not needed).
     
     Args:
         channel: Delivery channel (email, push, sms).
@@ -190,7 +270,7 @@ def send_engagement(channel: str, customer_email: str, subject: str, content: st
     Returns:
         dict: Delivery status and tracking info.
     """
-    # Production: POST to SendGrid/Brevo API or Magento transactional email
+    # Production: Emarsys POST /api/v2/email/send or transactional API
     return {
         "status": "delivered",
         "channel": channel,
@@ -199,27 +279,6 @@ def send_engagement(channel: str, customer_email: str, subject: str, content: st
         "tracking_id": f"msg_{channel}_20260312_001",
         "open_tracking": True,
         "click_tracking": True
-    }
-
-
-def update_crm_segment(customer_id: str, segment: str, tags: str) -> dict:
-    """Updates customer segment and tags in the CRM.
-    
-    Args:
-        customer_id: Customer to update.
-        segment: New segment (vip_active, at_risk, dormant, new).
-        tags: Comma-separated tags to add.
-    
-    Returns:
-        dict: Update confirmation.
-    """
-    # Production: PUT /rest/V1/customers/{id} or CRM API (HubSpot, Salesforce)
-    return {
-        "status": "updated",
-        "customer_id": customer_id,
-        "segment": segment,
-        "tags_added": [t.strip() for t in tags.split(",")],
-        "updated_at": "2026-03-12T12:00:00Z"
     }
 
 
@@ -233,14 +292,20 @@ profiling_agent = Agent(
     model="gemini-2.5-flash",
     description="Analyzes customer profile, purchase history, and behavior patterns from Magento.",
     instruction="""You are a customer intelligence analyst. Given a customer ID:
-    1. Get the customer profile using get_customer_profile
+    1. Get the customer profile from Magento using get_customer_profile
     2. Get their recent order history using get_order_history
     3. Check for abandoned carts using check_cart_abandonment
-    4. Analyze patterns: favorite products, purchase frequency, average basket, seasonal trends
-    5. Identify the customer's current lifecycle stage: new, active, at-risk, dormant
+    4. Get their Emarsys CRM profile using emarsys_get_contact (engagement score, RFM segment, campaign history)
+    5. Cross-reference Magento purchase data with Emarsys engagement signals
+    6. Identify the customer's lifecycle stage combining both data sources
     
-    Produce a clear customer brief with key insights for the next agents.""",
-    tools=[get_customer_profile, get_order_history, check_cart_abandonment],
+    Key Emarsys metrics to highlight:
+    - RFM segment (champions/loyal/at_risk/lost)
+    - Engagement score and email open/click rates
+    - Smart Insight prediction
+    
+    Produce a clear customer brief merging Magento + Emarsys insights.""",
+    tools=[get_customer_profile, get_order_history, check_cart_abandonment, emarsys_get_contact],
 )
 
 # Agent 2: Product Recommendation — what should we recommend?
@@ -266,21 +331,22 @@ engagement_agent = Agent(
     name="engagement_agent",
     model="gemini-2.5-flash",
     description="Executes personalized customer engagement across channels.",
-    instruction="""You are a customer engagement specialist. Based on the recommendations:
-    1. Choose the best channel based on the customer profile:
-       - Email for regular engagement
-       - Push notification for abandoned cart recovery
-       - SMS for urgent/time-limited offers
-    2. Write a personalized message using their name and referencing their preferences
-    3. Send the engagement using send_engagement
-    4. Update the CRM segment using update_crm_segment
+    instruction="""You are a customer engagement specialist using Emarsys as CRM. Based on the recommendations:
+    1. Check the Emarsys engagement score and preferred channel from the customer brief
+    2. For multi-step re-engagement → use emarsys_trigger_automation to enroll in an automation program:
+       - 'cart_recovery_v2' for abandoned carts
+       - 'vip_winback' for VIP at-risk customers
+       - 'cross_sell_flow' for active customers with new recommendations
+    3. For one-shot messages → use send_engagement (only if automation is overkill)
+    4. Always update the Emarsys segment using emarsys_update_segment
     
-    Message guidelines:
-    - Short, personal, not salesy
-    - Reference a specific product they liked
-    - Include discount code if generated
-    - Max 3 product recommendations in the message""",
-    tools=[send_engagement, update_crm_segment],
+    Channel selection (based on Emarsys data):
+    - High open rate (>30%) → email first
+    - Low open rate + opted in → push notification
+    - SMS only for time-sensitive offers (flash sales, expiring coupons)
+    
+    Include event_data with: product names, discount code, customer name.""",
+    tools=[emarsys_trigger_automation, send_engagement, emarsys_update_segment],
 )
 
 # ============================================================
