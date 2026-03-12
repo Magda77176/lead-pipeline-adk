@@ -1,125 +1,126 @@
-"""Tests for the Lead Pipeline API."""
+"""Tests for the E-Commerce Pipeline."""
 
 import pytest
 from fastapi.testclient import TestClient
 from lead_pipeline.agent import (
-    enrich_lead, search_contacts, qualify_lead,
-    send_notification, check_crm_duplicate,
-    root_agent, enrichment_agent, qualification_agent, notification_agent,
+    get_customer_profile, get_order_history, get_product_catalog,
+    check_cart_abandonment, generate_discount_code, send_engagement,
+    update_crm_segment, root_agent, profiling_agent,
+    recommendation_agent, engagement_agent,
 )
 
 
 # ============================================================
-# TOOL TESTS — Verify each tool works independently
+# TOOL TESTS — Magento API integrations
 # ============================================================
 
-class TestEnrichLead:
-    def test_enrich_returns_success(self):
-        result = enrich_lead("Test Corp", "testcorp.com")
+class TestCustomerProfile:
+    def test_returns_customer_data(self):
+        result = get_customer_profile("12345")
         assert result["status"] == "success"
-        assert result["data"]["company_name"] == "Test Corp"
+        assert result["customer"]["id"] == "12345"
     
-    def test_enrich_detects_beauty_industry(self):
-        result = enrich_lead("L'Oréal")
-        assert result["data"]["industry"] == "beauty_and_cosmetics"
-    
-    def test_enrich_default_industry(self):
-        result = enrich_lead("Random Tech")
-        assert result["data"]["industry"] == "technology"
+    def test_includes_purchase_metrics(self):
+        result = get_customer_profile("12345")
+        c = result["customer"]
+        assert "total_orders" in c
+        assert "lifetime_value" in c
+        assert "avg_order_value" in c
+        assert c["lifetime_value"] > 0
 
 
-class TestSearchContacts:
-    def test_search_returns_contacts(self):
-        result = search_contacts("Test Corp", "CTO")
+class TestOrderHistory:
+    def test_returns_orders(self):
+        result = get_order_history("12345")
         assert result["status"] == "success"
-        assert len(result["contacts"]) > 0
+        assert len(result["orders"]) > 0
     
-    def test_contact_has_required_fields(self):
-        result = search_contacts("Test Corp")
-        contact = result["contacts"][0]
-        assert "name" in contact
-        assert "email" in contact
-        assert "title" in contact
+    def test_orders_have_items(self):
+        result = get_order_history("12345")
+        order = result["orders"][0]
+        assert "items" in order
+        assert len(order["items"]) > 0
+        assert "sku" in order["items"][0]
+        assert "price" in order["items"][0]
 
 
-class TestQualifyLead:
-    def test_hot_lead_beauty_enterprise(self):
-        result = qualify_lead(
-            company_name="L'Oréal",
-            industry="beauty_and_cosmetics",
-            employee_count="10000+",
-            tech_stack="Python, GCP, Vertex AI"
-        )
-        assert result["qualification"] == "hot"
-        assert result["score"] >= 70
+class TestProductCatalog:
+    def test_skincare_catalog(self):
+        result = get_product_catalog("skincare")
+        assert result["status"] == "success"
+        assert len(result["products"]) > 0
     
-    def test_cold_lead_small_unknown(self):
-        result = qualify_lead(
-            company_name="Small Co",
-            industry="unknown",
-            employee_count="5",
-            tech_stack="WordPress"
-        )
-        assert result["qualification"] == "cold"
-        assert result["score"] < 50
+    def test_makeup_catalog(self):
+        result = get_product_catalog("makeup")
+        assert result["category"] == "makeup"
+        assert any(p["new"] for p in result["products"])
     
-    def test_score_never_exceeds_100(self):
-        result = qualify_lead(
-            company_name="Perfect Corp",
-            industry="beauty_and_cosmetics",
-            employee_count="10000+",
-            tech_stack="Python, GCP, Vertex AI, Kubernetes, TensorFlow, PyTorch"
-        )
-        assert result["score"] <= 100
+    def test_products_have_required_fields(self):
+        result = get_product_catalog("skincare")
+        product = result["products"][0]
+        for field in ["sku", "name", "price", "stock", "rating"]:
+            assert field in product
 
 
-class TestSendNotification:
-    def test_notification_delivered(self):
-        result = send_notification("slack", "Test message", "Test Corp", 85)
+class TestCartAbandonment:
+    def test_detects_abandoned_cart(self):
+        result = check_cart_abandonment("12345")
+        assert result["has_abandoned_cart"] == True
+        assert result["cart"]["total"] > 0
+
+
+class TestDiscountCode:
+    def test_generates_valid_code(self):
+        result = generate_discount_code("12345", "15", "abandonment")
+        assert result["status"] == "success"
+        assert result["coupon"]["discount_percent"] == 15
+        assert result["coupon"]["single_use"] == True
+    
+    def test_code_format(self):
+        result = generate_discount_code("12345", "10", "loyalty")
+        assert "VIP-" in result["coupon"]["code"]
+
+
+class TestSendEngagement:
+    def test_email_delivery(self):
+        result = send_engagement("email", "test@test.com", "Subject", "Body")
         assert result["status"] == "delivered"
-        assert result["channel"] == "slack"
-    
-    def test_notification_includes_score(self):
-        result = send_notification("crm", "Hot lead!", "L'Oréal", 90)
-        assert result["score"] == 90
+        assert result["channel"] == "email"
+        assert result["open_tracking"] == True
 
 
-class TestCrmDuplicate:
-    def test_no_duplicate_found(self):
-        result = check_crm_duplicate("New Company")
-        assert result["exists"] == False
+class TestCrmSegment:
+    def test_segment_update(self):
+        result = update_crm_segment("12345", "vip_active", "skincare_lover, high_ltv")
+        assert result["status"] == "updated"
+        assert "skincare_lover" in result["tags_added"]
 
 
 # ============================================================
-# AGENT STRUCTURE TESTS — Verify ADK agent configuration
+# AGENT STRUCTURE TESTS
 # ============================================================
 
 class TestAgentStructure:
-    def test_root_agent_is_sequential(self):
+    def test_root_is_sequential(self):
         from google.adk.agents import SequentialAgent
         assert isinstance(root_agent, SequentialAgent)
     
-    def test_root_has_three_sub_agents(self):
-        assert len(root_agent.sub_agents) == 3
-    
-    def test_sub_agent_names(self):
+    def test_pipeline_order(self):
         names = [a.name for a in root_agent.sub_agents]
-        assert "enrichment_agent" in names
-        assert "qualification_agent" in names
-        assert "notification_agent" in names
+        assert names == ["profiling_agent", "recommendation_agent", "engagement_agent"]
     
-    def test_enrichment_agent_has_tools(self):
-        assert len(enrichment_agent.tools) == 3  # enrich, contacts, crm_check
+    def test_profiling_has_3_tools(self):
+        assert len(profiling_agent.tools) == 3
     
-    def test_qualification_agent_has_tools(self):
-        assert len(qualification_agent.tools) == 1  # qualify
+    def test_recommendation_has_2_tools(self):
+        assert len(recommendation_agent.tools) == 2
     
-    def test_notification_agent_has_tools(self):
-        assert len(notification_agent.tools) == 1  # notify
+    def test_engagement_has_2_tools(self):
+        assert len(engagement_agent.tools) == 2
 
 
 # ============================================================
-# API TESTS — Verify FastAPI endpoints
+# API TESTS
 # ============================================================
 
 class TestAPI:
@@ -131,9 +132,6 @@ class TestAPI:
     def test_root_endpoint(self, client):
         response = client.get("/")
         assert response.status_code == 200
-        data = response.json()
-        assert "architecture" in data
-        assert data["architecture"]["framework"] == "Google ADK (Agent Development Kit)"
     
     def test_health_endpoint(self, client):
         response = client.get("/health")
@@ -142,6 +140,6 @@ class TestAPI:
         assert data["status"] == "healthy"
         assert len(data["agents"]) == 3
     
-    def test_process_requires_company_name(self, client):
+    def test_process_validation(self, client):
         response = client.post("/process", json={})
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 422
