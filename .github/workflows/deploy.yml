@@ -1,59 +1,91 @@
+# Deploy manuel sur Cloud Run
 name: Deploy to Cloud Run
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
 
 env:
   PROJECT_ID: jarvis-v2-488311
   REGION: europe-west1
   SERVICE_NAME: lead-pipeline-adk
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
+    name: Tests préalables
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - run: python -m pytest tests/ -v
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run tests
+        run: python -m pytest tests/ -v
 
   deploy:
+    name: Deploy
     needs: test
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
     permissions:
       contents: read
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - id: auth
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.PROJECT_ID }}
-
-      - name: Build & Push to Artifact Registry
-        run: |
-          gcloud builds submit \
-            --tag ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/cloud-run/${{ env.SERVICE_NAME }}
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/cloud-run/${{ env.SERVICE_NAME }} \
+            --source . \
             --region ${{ env.REGION }} \
-            --platform managed \
+            --project ${{ env.PROJECT_ID }} \
             --allow-unauthenticated \
-            --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
             --memory 512Mi \
-            --cpu 1 \
-            --min-instances 0 \
-            --max-instances 3 \
-            --timeout 120
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}"
+
+      - name: Health Check
+        run: |
+          echo "🏥 Vérification santé du service..."
+          
+          URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} --format 'value(status.url)' || echo "")
+          if [ -n "$URL" ]; then
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health" || echo "000")
+            echo "Service: $STATUS ($URL)"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Deploy successful!"
+            else
+              echo "⚠️ Service deployed but health check failed"
+            fi
+          else
+            echo "❌ Could not get service URL"
+          fi
